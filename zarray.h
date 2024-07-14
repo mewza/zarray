@@ -1,19 +1,21 @@
 
-// zarray.h - ZArray C++ class that allows vector arrays to be indexed 
-//            by an int-vector such as int8, int4, int2
+// zarray.h - ZArray C++ class allows vector arrays to be indexed 
+// by an int-vectors such as int8, int4, int2, ..
 // Copyright (C) 2024 Dmitry Boldyrev. All Rights Reserved.
+// 
 // License: FREE for commercial and non-commercial use,
 // it is an ENJOYWARE and hope it speeds up your project for you.
-// GOD bless!
+// Here's an example:
+
+/*
+    ZArray<double4v> arr;
+    arr.
+ */
+
 
 #pragma once
 
 #include <simd/simd.h>
-
-typedef simd_float8 mssFloat8;
-typedef simd_float4 mssFloat4;
-typedef simd_float2 mssFloat2;
-
 
 typedef simd_float2 float2v;
 typedef simd_float4 float4v;
