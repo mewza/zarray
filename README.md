@@ -1,8 +1,5 @@
 ZArray is a C++ class which allows vector arrays to be indexed by
-int-vectors such as int8, int4, int2, ..
-Copyright (C) 2024 Dmitry
-
-Home: https://github.com/mewza/zarray/blob/main/zarray.h 
+int-vectors such as int8, int4, int2
 
 Licensed: FREE for commercial and non-commercial use,
 it is an ENJOYWARE and hope it speeds up your project for you.
