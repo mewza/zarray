@@ -1,4 +1,4 @@
-ZArray is a C++ class allows vector arrays to be indexed by an 
+ZArray is a C++ class which allows vector arrays to be indexed by
 int-vectors such as int8, int4, int2, ..
 Copyright (C) 2024 Dmitry
 
