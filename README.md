@@ -4,6 +4,9 @@ int-vectors such as int8, int4, int2
 Licensed: FREE for commercial and non-commercial use,
 it is an ENJOYWARE and hope it speeds up your project for you.
 
+Can it be further optimized I am sure! But I am too lazy to do it,
+feel free to suggest optimizations ideas.
+
     Example usage: 
 
     ZArray<double4v> arr[1024], aVec = 0.0;
