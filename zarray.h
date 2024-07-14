@@ -1,10 +1,11 @@
 
-// zarray.h - ZArray C++ class allows vector arrays to be indexed 
-// by an int-vectors such as int8, int4, int2, ..
-// Copyright (C) 2024 Dmitryhttps://github.com/mewza/zarray/blob/main/zarray.h Boldyrev. All Rights Reserved.
-// 
-// License: FREE for commercial and non-commercial use,
-// it is an ENJOYWARE and hope it speeds up your project for you.
+//  zarray.h - ZArray C++ class allows vector arrays to be indexed 
+//  by an int-vectors such as int8, int4, int2, ..
+//  Copyright (C) 2024 Dmitry Boldyrev. All Rights Reserved.
+//  Home GIT: https://github.com/mewza/zarray
+//
+//  License: FREE for commercial and non-commercial use,
+//  it is an ENJOYWARE and hope it speeds up your project for you.
 
 /* 
     Example usage: 
