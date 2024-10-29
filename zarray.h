@@ -1,6 +1,7 @@
 
-//  zarray.h - ZArray C++ class allows vector arrays to be indexed 
-//  by an int-vectors such as int8, int4, int2, ..
+//  zarray.h - ZArray C++ class v1.1 allows vector arrays 
+//  to be indexed by their equivalent size integer vectors.
+//
 //  Copyright (C) 2024 Dmitry Boldyrev. All Rights Reserved.
 //  Home GIT: https://github.com/mewza/zarray
 //
@@ -55,30 +56,58 @@ typedef simd_int2 int2v;
 typedef simd_int4 int4v;
 typedef simd_int8 int8v;
 
+template<typename T>
+concept IsVector = requires { T{}[0]; };
+
+static inline constexpr int alignFor(int typeSize, int nelem) {
+   // if (typeSize > 2)
+     //   return 16;
+    return typeSize * nelem;
+}
+
+template<typename ZZ>
+using SimdBase = decltype([] {
+    using std::is_same_v;
+
+    if constexpr(
+        is_same_v<ZZ, int> ||
+        is_same_v<ZZ, float> ||
+        is_same_v<ZZ, double>
+    )
+        return ZZ{};
+    else
+        return ZZ{}[0] + 0;
+}());
+
+template<typename ZZ> struct SimdInfo {
+    using Base = SimdBase<ZZ>;
+    static constexpr int size = sizeof(ZZ) / sizeof(Base);
+};
+
+template <class ZZ>
+inline constexpr int SimdSize = SimdInfo<ZZ>::size;
+
+template<typename Z, int size>
+using Simd = Z __attribute__((ext_vector_type(size),aligned(alignFor(sizeof(Z),size))));
+
+template<typename ZZ, typename NewBase>
+using SimdSame = Simd<NewBase, SimdInfo<ZZ>::size>;
+
+template<typename ZZ, typename NewBase>
+using SimdSameHalf = Simd<NewBase, SimdInfo<ZZ>::size/2>;
+
+#define NOT_VECTOR(Z) (std::is_same_v<Z, float> || std::is_same_v<Z, double>)
+#define IS_VECTOR(Z)  (IsVector<Z>)
+
 template<class T, size_t N> struct ZArray;
 template<class T, size_t N> struct ZArray {
+    
+    using IT = SimdSame<T,int>;
+    using T8 = Simd<SimdBase<T>,8>;
+    using T4 = Simd<SimdBase<T>,4>;
+    using T2 = Simd<SimdBase<T>,2>;
+    using T1 = SimdBase<T>;
 
-#define DECL_TT(TT, X, FLOAT, DOUBLE) \
-using TT =  std::conditional_t< std::is_same_v<X, float8v>, FLOAT##8v, \
-std::conditional_t< std::is_same_v<X, float4v>, FLOAT##4v, \
-std::conditional_t< std::is_same_v<X, float2v>, FLOAT##2v, \
-std::conditional_t< std::is_same_v<X, float>,    FLOAT,  \
-std::conditional_t< std::is_same_v<X, double8v>, DOUBLE##8v, \
-std::conditional_t< std::is_same_v<X, double4v>, DOUBLE##4v, \
-std::conditional_t< std::is_same_v<X, double2v>, DOUBLE##2v, T >>>>>>>;
-    
-    DECL_TT(T1, T, float, double);
-    DECL_TT(T2, T, float, double);
-    DECL_TT(T4, T, float, double);
-    DECL_TT(T8, T, float, double);
-#undef DECL_TT
-    
-    using IT =  std::conditional_t< std::is_same_v<T, float8v>, int8v,
-                std::conditional_t< std::is_same_v<T, float4v>, int4v,
-                std::conditional_t< std::is_same_v<T, float2v>, int2v,
-                std::conditional_t< std::is_same_v<T, double8v>, int8v,
-                std::conditional_t< std::is_same_v<T, double4v>, int4v,
-                std::conditional_t< std::is_same_v<T, double2v>, int2v, int >>>>>>;
 public:
     T dd[N];
     
@@ -89,40 +118,44 @@ public:
         IT ii;
         
         ZProxy(ZArray &a, IT& i) : a(a), ii(i) {}
-        T& operator = (T& v) {
-            if constexpr(  std::is_same_v<T, float8v> || std::is_same_v<T, double8v> ) {
+        T& operator = (const T& v) {
+            if constexpr( SimdSize<T> == 8 ) {
                 static T8 tmp;
-                a.dd[ii[0]][0]=v[0]; a.dd[ii[1]][1]=v[1]; a.dd[ii[2]][2]=v[2]; a.dd[ii[3]][3]=v[3];
-                a.dd[ii[4]][4]=v[4]; a.dd[ii[5]][5]=v[5]; a.dd[ii[6]][6]=v[6]; a.dd[ii[7]][7]=v[7];
+                a.dd[ii[0]][0] = v[0]; a.dd[ii[1]][1] = v[1]; a.dd[ii[2]][2] = v[2]; a.dd[ii[3]][3] = v[3];
+                a.dd[ii[4]][4] = v[4]; a.dd[ii[5]][5] = v[5]; a.dd[ii[6]][6] = v[6]; a.dd[ii[7]][7] = v[7];
                 tmp = T{ a.dd[ii[0]][0], a.dd[ii[1]][1], a.dd[ii[2]][2], a.dd[ii[3]][3], a.dd[ii[4]][4], a.dd[ii[5]][5], a.dd[ii[6]][6], a.dd[ii[7]][7] };
                 return tmp;
-            } else if constexpr(  std::is_same_v<T, float4v> || std::is_same_v<T, double4v> ) {
+            } else if constexpr( SimdSize<T> == 4 ) {
                 static T4 tmp;
-                a.dd[ii[0]][0]=v[0]; a.dd[ii[1]][1]=v[1]; a.dd[ii[2]][2]=v[2]; a.dd[ii[3]][3]=v[3];
+                a.dd[ii[0]][0] = v[0]; a.dd[ii[1]][1] = v[1]; a.dd[ii[2]][2] = v[2]; a.dd[ii[3]][3] = v[3];
                 tmp = T{ a.dd[ii[0]][0], a.dd[ii[1]][1], a.dd[ii[2]][2], a.dd[ii[3]][3] };
                 return tmp;
-            } else if constexpr(  std::is_same_v<T, float2v> || std::is_same_v<T, double2v> ) {
+            } else if constexpr( SimdSize<T> == 2 ) {
                 static T2 tmp;
-                a.dd[ii[0]][0]=v[0]; a.dd[ii[1]][1]=v[1];
-                tmp = T2{ a.dd[ii[0]][0], a.dd[ii[1]][1] };
+                a.dd[ii[0]][0] = v[0]; a.dd[ii[1]][1] = v[1];
+                tmp = T{ a.dd[ii[0]][0], a.dd[ii[1]][1] };
+                return tmp;
+            } else if constexpr( SimdSize<T> == 1 ) {
+                static T1 tmp;
+                a.dd[ii[0]] = v;
+                tmp = a.dd[ii[0]];
                 return tmp;
             }
         }
         
-        inline operator T() const 
+        inline operator T() const
         {
-            if constexpr( std::is_same_v<T, float8v> || std::is_same_v<T, double8v> ) {
-                return T8{ a.dd[ii[0]][0], a.dd[ii[1]][1], a.dd[ii[2]][2], a.dd[ii[3]][3], a.dd[ii[4]][4], a.dd[ii[5]][5], a.dd[ii[6]][6], a.dd[ii[7]][7] };
-            } else if constexpr( std::is_same_v<T, float4v> || std::is_same_v<T, double4v> ) {
-                return T4{ a.dd[ii[0]][0], a.dd[ii[1]][1], a.dd[ii[2]][2], a.dd[ii[3]][3] };
-            } else if constexpr( std::is_same_v<T, float2v> || std::is_same_v<T, double2v> ) {
-                return T2{ a.dd[ii[0]][0], a.dd[ii[1]][1] };
+            if constexpr( SimdSize<T> == 8 ) {
+                return T{ a.dd[ii[0]][0], a.dd[ii[1]][1], a.dd[ii[2]][2], a.dd[ii[3]][3], a.dd[ii[4]][4], a.dd[ii[5]][5], a.dd[ii[6]][6], a.dd[ii[7]][7] };
+            } else if constexpr( SimdSize<T> == 4 ) {
+                return T{ a.dd[ii[0]][0], a.dd[ii[1]][1], a.dd[ii[2]][2], a.dd[ii[3]][3] };
+            } else if constexpr( SimdSize<T> == 2 ) {
+                return T{ a.dd[ii[0]][0], a.dd[ii[1]][1] };
+            } else if constexpr( SimdSize<T> == 1 ) {
+                return a.dd[ii[0]];
             }
         }
-        
-        
     };
     ZProxy operator[] (IT& i) { return ZProxy(*this, i); }
     ZArray() {}
-    
 };
