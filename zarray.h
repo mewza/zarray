@@ -1,14 +1,16 @@
-
-//  zarray.h - ZArray C++ class v1.1 allows vector arrays 
-//  to be indexed by their equivalent size integer vectors.
-//
-//  Copyright (C) 2024 Dmitry Boldyrev. All Rights Reserved.
-//  Home GIT: https://github.com/mewza/zarray
-//
-//  License: FREE for commercial and non-commercial use,
-//  it is an ENJOYWARE and hope it speeds up your project for you.
-
-/* 
+/*
+    ZArray is a C++ class (v1.1) that allows SIMD vector arrays to be indexed by
+    integer equivalent in vector size vectors such as int8, int4, int2
+    
+    LICENSE: FREE for commercial and non-commercial use,
+    it is an ENJOYWARE and hope it speeds up your project for you. Credit mention
+    always welcome, as usual.
+    
+    NEW (v1.1): Can it be further optimized? I am sure, if you have an idea write me
+    to: subband@protonmail.com. In the meantime I added a nicer way identify T vector 
+    size using special C++ macros (before included in const1.h in other projects, 
+    but now specifically added to this project)
+    
     Example usage: 
 
     ZArray<double4v> arr[1024], aVec = 0.0;
@@ -31,8 +33,7 @@
     // arr[10][0] = 0.0; arr[20][1] = -1.0;  
     // arr[30][2] = 3.1415; arr[40][3] = -3.1415
 
-    well you get the idea... 
-
+    well you get the idea.
  */
 
 
