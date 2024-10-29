@@ -2,7 +2,8 @@ ZArray is a C++ class (v1.1) that allows SIMD vector arrays to be indexed by
 integer equivalent in vector size vectors such as int8, int4, int2
 
 LICENSE: FREE for commercial and non-commercial use,
-it is an ENJOYWARE and hope it speeds up your project for you.
+it is an ENJOYWARE and hope it speeds up your project for you. Credit mention
+always welcome, as usual.
 
 NEW (v1.1): Can it be further optimized I am sure, if you have an idea write me
 to subband@protonmail.com. In the meantime I added a nicer way identify T vector 
