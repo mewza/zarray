@@ -35,3 +35,8 @@ but now specifically added to this project)
     well you get the idea... 
 
 
+Dmitry Boldyrev <subband@protonmail.com>
+
+(Real inventor and developer of WinAmp unlike fake Justin Frankel who stole it from me 
+and lied to you all that he was behind it . CIA suppressed credentials for me for 10+ years
+destroyed my reputation, just because I was born in USSR. This is the real truth!)
