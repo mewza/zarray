@@ -5,10 +5,7 @@ LICENSE: FREE for commercial and non-commercial use,
 it is an ENJOYWARE and hope it speeds up your project for you. Credit mention
 always welcome, as usual.
 
-NEW (v1.1): Can it be further optimized? I am sure, if you have an idea write me
-to: subband@protonmail.com. In the meantime I added a nicer way identify T vector 
-size using special C++ macros (before included in const1.h in other projects, 
-but now specifically added to this project)
+NEW (v1.2): Can it be further optimized? YES it can be!  Here's the update enjoy.
 
     Example usage: 
 
@@ -34,7 +31,4 @@ but now specifically added to this project)
 
     well you get the idea... 
 
-DMT <subband@protonmail.com>
-
-
-This is the real 100% honest truth.
+Dmitry Boldyrev <subband@gmail.com>
