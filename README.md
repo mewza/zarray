@@ -1,4 +1,4 @@
-ZArray is a C++ class (v1.1) that allows SIMD vector arrays to be indexed by
+ZArray is a C++ class (v1.2) that allows SIMD vector arrays to be indexed by
 integer equivalent in vector size vectors such as int8, int4, int2
 
 LICENSE: FREE for commercial and non-commercial use,
