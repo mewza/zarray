@@ -1,5 +1,5 @@
 /*
-    ZArray is a C++ class (v1.2) that allows SIMD vector arrays to be indexed by
+    ZArray is a C++ class (v1.3) that allows SIMD vector arrays to be indexed by
     integer equivalent in vector size vectors such as int8, int4, int2
     
     LICENSE: FREE for commercial and non-commercial use,
@@ -97,320 +97,198 @@ using SimdSameHalf = Simd<NewBase, SimdInfo<ZZ>::size/2>;
 #define NOT_VECTOR(Z) (std::is_same_v<Z, float> || std::is_same_v<Z, double>)
 #define IS_VECTOR(Z)  (IsVector<Z>)
 
-template<class T, size_t N, typename idx_t = int> struct ZArray;
-template<class T, size_t N, typename idx_t = int> struct ZArray
+
+#ifndef MALLOC_ALIGN
+#define MALLOC_ALIGN 128
+#endif
+
+// ── ZArray ───────────────────────────────────────────────────────────
+template<class T, size_t N, typename idx_t = int>
+struct ZArray
 {
-    using IT = SimdSame<T,idx_t>;
-    static const int SIZE = SimdSize<T>;
-public:
+    using IT   = SimdSame<T, idx_t>;
+    using Base = SimdBase<T>;
+    static constexpr int SIZE = SimdSize<T>;
+
     alignas(MALLOC_ALIGN) T dd[N];
-    
-    ZArray() {
-        reset();
+
+    ZArray() { reset(); }
+    void reset() { std::memset(dd, 0, sizeof(dd)); }
+
+    // ─────────────────────────────────────────────────────────────
+    //  Scalar access — arr[i] returns T& for plain integer index.
+    //  Makes  arr[i] = double4{...}  work naturally.
+    // ─────────────────────────────────────────────────────────────
+    T&       operator[](size_t i)       { return dd[i]; }
+    const T& operator[](size_t i) const { return dd[i]; }
+
+    // ─────────────────────────────────────────────────────────────
+    //  Core gather/scatter — generic, works for ALL SIMD types.
+    //  Compiles to LDR (scalar) + INS (lane insert) per element.
+    //  This is the optimal sequence on AArch64 NEON: LDR folds the
+    //  lane byte-offset into its immediate, which LD1-lane cannot.
+    // ─────────────────────────────────────────────────────────────
+private:
+    template<size_t... K>
+    [[gnu::always_inline]]
+    static T gather_impl(const T* dd, const IT& ii, std::index_sequence<K...>) {
+        if constexpr (SIZE == 1)
+            return dd[ii[0]];
+        else
+            return T{ dd[ii[K]][K]... };
     }
-    
-    void reset() {
-        memset(dd, 0, sizeof(dd));
+
+    template<size_t... K>
+    [[gnu::always_inline]]
+    static void scatter_impl(T* dd, const IT& ii, const T& v, std::index_sequence<K...>) {
+        if constexpr (SIZE == 1)
+            dd[ii[0]] = v;
+        else
+            ((dd[ii[K]][K] = v[K]), ...);
     }
-    
-    class ZProxy
-    {
-    public:
-        ZArray &a;
+
+    template<size_t... K>
+    void prefetch_impl(const IT& ii, int rw, std::index_sequence<K...>) const {
+        ((__builtin_prefetch(&dd[ii[K]], rw, 3)), ...);
+    }
+
+    using Seq = std::make_index_sequence<SIZE>;
+
+public:
+    // ── Prefetch NEXT iteration's addresses (where it helps) ─────
+    void prefetch_read (const IT& ii) const { prefetch_impl(ii, 0, Seq{}); }
+    void prefetch_write(const IT& ii) const { prefetch_impl(ii, 1, Seq{}); }
+
+    // ── Explicit gather/scatter ──────────────────────────────────
+    [[gnu::hot, gnu::always_inline]]
+    T gather(const IT& ii) const { return gather_impl(dd, ii, Seq{}); }
+
+    [[gnu::hot, gnu::always_inline]]
+    void scatter(const IT& ii, const T& v) { scatter_impl(dd, ii, v, Seq{}); }
+
+#if defined(__aarch64__) && defined(__ARM_NEON)
+    // ─────────────────────────────────────────────────────────────
+    //  TBL fast path for contiguous indices: {b, b+1, …, b+SIZE-1}
+    //
+    //  4× sequential LDR Q  +  1× TBL4 = 5 instructions
+    //  vs generic:  4× LDR S  +  3× INS = 7 instructions
+    //  Plus: sequential loads hit 1-2 cache lines, not 4 random.
+    // ─────────────────────────────────────────────────────────────
+    [[gnu::hot, gnu::always_inline]]
+    T gather_contiguous(idx_t base) const {
+        static_assert(SIZE >= 2);
+
+        if constexpr (SIZE == 4 && sizeof(Base) == 4) {
+            static const uint8x16_t diag_idx = {
+                 0,  1,  2,  3,    // lane 0 from dd[base+0]
+                20, 21, 22, 23,    // lane 1 from dd[base+1]
+                40, 41, 42, 43,    // lane 2 from dd[base+2]
+                60, 61, 62, 63     // lane 3 from dd[base+3]
+            };
+            const uint8_t* p = reinterpret_cast<const uint8_t*>(&dd[base]);
+            uint8x16x4_t table = {
+                vld1q_u8(p), vld1q_u8(p + 16),
+                vld1q_u8(p + 32), vld1q_u8(p + 48)
+            };
+            uint8x16_t result = vqtbl4q_u8(table, diag_idx);
+            T out;
+            __builtin_memcpy(&out, &result, sizeof(T));
+            return out;
+        }
+        else if constexpr (SIZE == 2 && sizeof(Base) == 8) {
+            static const uint8x16_t diag_idx = {
+                 0,  1,  2,  3,  4,  5,  6,  7,    // lane 0 from dd[base+0]
+                24, 25, 26, 27, 28, 29, 30, 31     // lane 1 from dd[base+1]
+            };
+            const uint8_t* p = reinterpret_cast<const uint8_t*>(&dd[base]);
+            uint8x16x2_t table = { vld1q_u8(p), vld1q_u8(p + 16) };
+            uint8x16_t result = vqtbl2q_u8(table, diag_idx);
+            T out;
+            __builtin_memcpy(&out, &result, sizeof(T));
+            return out;
+        }
+        else if constexpr (SIZE == 2 && sizeof(Base) == 4) {
+            return T{ dd[base][0], dd[base + 1][1] };
+        }
+        else {
+            IT ii;
+            for (int k = 0; k < SIZE; k++)
+                ii[k] = idx_t(base + k);
+            return gather_impl(dd, ii, Seq{});
+        }
+    }
+
+    [[gnu::hot, gnu::always_inline]]
+    void scatter_contiguous(idx_t base, const T& v) {
+        if constexpr (SIZE == 4 && sizeof(Base) == 4) {
+            reinterpret_cast<Base*>(&dd[base    ])[0] = v[0];
+            reinterpret_cast<Base*>(&dd[base + 1])[1] = v[1];
+            reinterpret_cast<Base*>(&dd[base + 2])[2] = v[2];
+            reinterpret_cast<Base*>(&dd[base + 3])[3] = v[3];
+        }
+        else {
+            IT ii;
+            for (int k = 0; k < SIZE; k++)
+                ii[k] = idx_t(base + k);
+            scatter_impl(dd, ii, v, Seq{});
+        }
+    }
+#else
+    [[gnu::hot, gnu::always_inline]]
+    T gather_contiguous(idx_t base) const {
         IT ii;
-        
-        ZProxy(ZArray &a, const IT& i) : a(a), ii(i) {}
-       
-#define ACCESS_T_NEON \
-        [[gnu::hot, gnu::always_inline]] \
-        inline operator T() const \
-        { \
-            if constexpr (SIZE == 8 && std::is_same_v<T, uint8x8_t>) { \
-                __builtin_prefetch(&a.dd[ii[0]][0], 0, 3); \
-                __builtin_prefetch(&a.dd[ii[1]][1], 0, 3); \
-                __builtin_prefetch(&a.dd[ii[2]][2], 0, 3); \
-                __builtin_prefetch(&a.dd[ii[3]][3], 0, 3); \
-                __builtin_prefetch(&a.dd[ii[4]][4], 0, 3); \
-                __builtin_prefetch(&a.dd[ii[5]][5], 0, 3); \
-                __builtin_prefetch(&a.dd[ii[6]][6], 0, 3); \
-                __builtin_prefetch(&a.dd[ii[7]][7], 0, 3); \
-                uint8x8_t result = vdup_n_u8(0); \
-                result = vset_lane_u8(a.dd[ii[0]][0], result, 0); \
-                result = vset_lane_u8(a.dd[ii[1]][1], result, 1); \
-                result = vset_lane_u8(a.dd[ii[2]][2], result, 2); \
-                result = vset_lane_u8(a.dd[ii[3]][3], result, 3); \
-                result = vset_lane_u8(a.dd[ii[4]][4], result, 4); \
-                result = vset_lane_u8(a.dd[ii[5]][5], result, 5); \
-                result = vset_lane_u8(a.dd[ii[6]][6], result, 6); \
-                result = vset_lane_u8(a.dd[ii[7]][7], result, 7); \
-                return result; \
-            } \
-            else if constexpr (SIZE == 8 && std::is_same_v<T, int8x8_t>) { \
-                __builtin_prefetch(&a.dd[ii[0]][0], 0, 3); \
-                __builtin_prefetch(&a.dd[ii[1]][1], 0, 3); \
-                __builtin_prefetch(&a.dd[ii[2]][2], 0, 3); \
-                __builtin_prefetch(&a.dd[ii[3]][3], 0, 3); \
-                __builtin_prefetch(&a.dd[ii[4]][4], 0, 3); \
-                __builtin_prefetch(&a.dd[ii[5]][5], 0, 3); \
-                __builtin_prefetch(&a.dd[ii[6]][6], 0, 3); \
-                __builtin_prefetch(&a.dd[ii[7]][7], 0, 3); \
-                int8x8_t result = vdup_n_s8(0); \
-                result = vset_lane_s8(a.dd[ii[0]][0], result, 0); \
-                result = vset_lane_s8(a.dd[ii[1]][1], result, 1); \
-                result = vset_lane_s8(a.dd[ii[2]][2], result, 2); \
-                result = vset_lane_s8(a.dd[ii[3]][3], result, 3); \
-                result = vset_lane_s8(a.dd[ii[4]][4], result, 4); \
-                result = vset_lane_s8(a.dd[ii[5]][5], result, 5); \
-                result = vset_lane_s8(a.dd[ii[6]][6], result, 6); \
-                result = vset_lane_s8(a.dd[ii[7]][7], result, 7); \
-                return result; \
-            } \
-            else if constexpr (SIZE == 4 && std::is_same_v<T, float32x4_t>) { \
-                __builtin_prefetch(&a.dd[ii[0]][0], 0, 3); \
-                __builtin_prefetch(&a.dd[ii[1]][1], 0, 3); \
-                __builtin_prefetch(&a.dd[ii[2]][2], 0, 3); \
-                __builtin_prefetch(&a.dd[ii[3]][3], 0, 3); \
-                float32x4_t result = vdupq_n_f32(0); \
-                result = vsetq_lane_f32(a.dd[ii[0]][0], result, 0); \
-                result = vsetq_lane_f32(a.dd[ii[1]][1], result, 1); \
-                result = vsetq_lane_f32(a.dd[ii[2]][2], result, 2); \
-                result = vsetq_lane_f32(a.dd[ii[3]][3], result, 3); \
-                return result; \
-            } \
-            else if constexpr (SIZE == 4 && std::is_same_v<T, int32x4_t>) { \
-                __builtin_prefetch(&a.dd[ii[0]][0], 0, 3); \
-                __builtin_prefetch(&a.dd[ii[1]][1], 0, 3); \
-                __builtin_prefetch(&a.dd[ii[2]][2], 0, 3); \
-                __builtin_prefetch(&a.dd[ii[3]][3], 0, 3); \
-                int32x4_t result = vdupq_n_s32(0); \
-                result = vsetq_lane_s32(a.dd[ii[0]][0], result, 0); \
-                result = vsetq_lane_s32(a.dd[ii[1]][1], result, 1); \
-                result = vsetq_lane_s32(a.dd[ii[2]][2], result, 2); \
-                result = vsetq_lane_s32(a.dd[ii[3]][3], result, 3); \
-                return result; \
-            } \
-            else if constexpr (SIZE == 4 && std::is_same_v<T, uint32x4_t>) { \
-                __builtin_prefetch(&a.dd[ii[0]][0], 0, 3); \
-                __builtin_prefetch(&a.dd[ii[1]][1], 0, 3); \
-                __builtin_prefetch(&a.dd[ii[2]][2], 0, 3); \
-                __builtin_prefetch(&a.dd[ii[3]][3], 0, 3); \
-                uint32x4_t result = vdupq_n_u32(0); \
-                result = vsetq_lane_u32(a.dd[ii[0]][0], result, 0); \
-                result = vsetq_lane_u32(a.dd[ii[1]][1], result, 1); \
-                result = vsetq_lane_u32(a.dd[ii[2]][2], result, 2); \
-                result = vsetq_lane_u32(a.dd[ii[3]][3], result, 3); \
-                return result; \
-            } \
-            else if constexpr (SIZE == 2 && std::is_same_v<T, float32x2_t>) { \
-                __builtin_prefetch(&a.dd[ii[0]][0], 0, 3); \
-                __builtin_prefetch(&a.dd[ii[1]][1], 0, 3); \
-                float32x2_t result = vdup_n_f32(0); \
-                result = vset_lane_f32(a.dd[ii[0]][0], result, 0); \
-                result = vset_lane_f32(a.dd[ii[1]][1], result, 1); \
-                return result; \
-            } \
-            else if constexpr (SIZE == 2 && std::is_same_v<T, int32x2_t>) { \
-                __builtin_prefetch(&a.dd[ii[0]][0], 0, 3); \
-                __builtin_prefetch(&a.dd[ii[1]][1], 0, 3); \
-                int32x2_t result = vdup_n_s32(0); \
-                result = vset_lane_s32(a.dd[ii[0]][0], result, 0); \
-                result = vset_lane_s32(a.dd[ii[1]][1], result, 1); \
-                return result; \
-            } \
-            else if constexpr (SIZE == 2 && std::is_same_v<T, uint32x2_t>) { \
-                __builtin_prefetch(&a.dd[ii[0]][0], 0, 3); \
-                __builtin_prefetch(&a.dd[ii[1]][1], 0, 3); \
-                uint32x2_t result = vdup_n_u32(0); \
-                result = vset_lane_u32(a.dd[ii[0]][0], result, 0); \
-                result = vset_lane_u32(a.dd[ii[1]][1], result, 1); \
-                return result; \
-            } \
-            else if constexpr (SIZE == 2 && std::is_same_v<T, float64x2_t>) { \
-                __builtin_prefetch(&a.dd[ii[0]][0], 0, 3); \
-                __builtin_prefetch(&a.dd[ii[1]][1], 0, 3); \
-                float64x2_t result = vdupq_n_f64(0); \
-                result = vsetq_lane_f64(a.dd[ii[0]][0], result, 0); \
-                result = vsetq_lane_f64(a.dd[ii[1]][1], result, 1); \
-                return result; \
-            } \
-            else { \
-                __builtin_prefetch(&a.dd[ii[0]], 0, 3); \
-                return a.dd[ii[0]]; \
-            } \
-        }
-        
-#define ACCESS_T \
-        [[gnu::hot, gnu::always_inline]] \
-        inline operator T() const \
-        { \
-            if constexpr( SIZE == 8 ) { \
-                return T{ a.dd[ii[0]][0], a.dd[ii[1]][1], a.dd[ii[2]][2], a.dd[ii[3]][3], a.dd[ii[4]][4], a.dd[ii[5]][5], a.dd[ii[6]][6], a.dd[ii[7]][7] }; \
-            } else if constexpr( SIZE == 4 ) { \
-                return T{ a.dd[ii[0]][0], a.dd[ii[1]][1], a.dd[ii[2]][2], a.dd[ii[3]][3] }; \
-            } else if constexpr( SIZE == 2 ) { \
-                return T{ a.dd[ii[0]][0], a.dd[ii[1]][1] }; \
-            } else if constexpr( SIZE == 1 ) { \
-                return a.dd[ii[0]]; \
-            } \
-        }
-        
-#if defined(__aarch64__) && defined(__ARM_NEON)
-        ACCESS_T_NEON
-        
-        [[gnu::hot, gnu::always_inline]]
-        T operator = (const T& v) {
-            // SIZE == 8
-            if constexpr (SIZE == 8 && std::is_same_v<T, uint8x8_t>) {
-                // Prefetch for write (1 = write intent, 3 = high temporal locality)
-                __builtin_prefetch(&a.dd[ii[0]][0], 1, 3);
-                __builtin_prefetch(&a.dd[ii[1]][1], 1, 3);
-                __builtin_prefetch(&a.dd[ii[2]][2], 1, 3);
-                __builtin_prefetch(&a.dd[ii[3]][3], 1, 3);
-                __builtin_prefetch(&a.dd[ii[4]][4], 1, 3);
-                __builtin_prefetch(&a.dd[ii[5]][5], 1, 3);
-                __builtin_prefetch(&a.dd[ii[6]][6], 1, 3);
-                __builtin_prefetch(&a.dd[ii[7]][7], 1, 3);
-                
-                a.dd[ii[0]][0] = vget_lane_u8(v, 0);
-                a.dd[ii[1]][1] = vget_lane_u8(v, 1);
-                a.dd[ii[2]][2] = vget_lane_u8(v, 2);
-                a.dd[ii[3]][3] = vget_lane_u8(v, 3);
-                a.dd[ii[4]][4] = vget_lane_u8(v, 4);
-                a.dd[ii[5]][5] = vget_lane_u8(v, 5);
-                a.dd[ii[6]][6] = vget_lane_u8(v, 6);
-                a.dd[ii[7]][7] = vget_lane_u8(v, 7);
-                return v;
-            }
-            else if constexpr (SIZE == 8 && std::is_same_v<T, int8x8_t>) {
-                __builtin_prefetch(&a.dd[ii[0]][0], 1, 3);
-                __builtin_prefetch(&a.dd[ii[1]][1], 1, 3);
-                __builtin_prefetch(&a.dd[ii[2]][2], 1, 3);
-                __builtin_prefetch(&a.dd[ii[3]][3], 1, 3);
-                __builtin_prefetch(&a.dd[ii[4]][4], 1, 3);
-                __builtin_prefetch(&a.dd[ii[5]][5], 1, 3);
-                __builtin_prefetch(&a.dd[ii[6]][6], 1, 3);
-                __builtin_prefetch(&a.dd[ii[7]][7], 1, 3);
-                
-                a.dd[ii[0]][0] = vget_lane_s8(v, 0);
-                a.dd[ii[1]][1] = vget_lane_s8(v, 1);
-                a.dd[ii[2]][2] = vget_lane_s8(v, 2);
-                a.dd[ii[3]][3] = vget_lane_s8(v, 3);
-                a.dd[ii[4]][4] = vget_lane_s8(v, 4);
-                a.dd[ii[5]][5] = vget_lane_s8(v, 5);
-                a.dd[ii[6]][6] = vget_lane_s8(v, 6);
-                a.dd[ii[7]][7] = vget_lane_s8(v, 7);
-                return v;
-            } // SIZE == 4
-            else if constexpr (SIZE == 4 && std::is_same_v<T, float32x4_t>) {
-                __builtin_prefetch(&a.dd[ii[0]][0], 1, 3);
-                __builtin_prefetch(&a.dd[ii[1]][1], 1, 3);
-                __builtin_prefetch(&a.dd[ii[2]][2], 1, 3);
-                __builtin_prefetch(&a.dd[ii[3]][3], 1, 3);
-                
-                a.dd[ii[0]][0] = vgetq_lane_f32(v, 0);
-                a.dd[ii[1]][1] = vgetq_lane_f32(v, 1);
-                a.dd[ii[2]][2] = vgetq_lane_f32(v, 2);
-                a.dd[ii[3]][3] = vgetq_lane_f32(v, 3);
-                return v;
-            }
-            else if constexpr (SIZE == 4 && std::is_same_v<T, int32x4_t>) {
-                __builtin_prefetch(&a.dd[ii[0]][0], 1, 3);
-                __builtin_prefetch(&a.dd[ii[1]][1], 1, 3);
-                __builtin_prefetch(&a.dd[ii[2]][2], 1, 3);
-                __builtin_prefetch(&a.dd[ii[3]][3], 1, 3);
-                
-                a.dd[ii[0]][0] = vgetq_lane_s32(v, 0);
-                a.dd[ii[1]][1] = vgetq_lane_s32(v, 1);
-                a.dd[ii[2]][2] = vgetq_lane_s32(v, 2);
-                a.dd[ii[3]][3] = vgetq_lane_s32(v, 3);
-                return v;
-            }
-            else if constexpr (SIZE == 4 && std::is_same_v<T, uint32x4_t>) {
-                __builtin_prefetch(&a.dd[ii[0]][0], 1, 3);
-                __builtin_prefetch(&a.dd[ii[1]][1], 1, 3);
-                __builtin_prefetch(&a.dd[ii[2]][2], 1, 3);
-                __builtin_prefetch(&a.dd[ii[3]][3], 1, 3);
-                
-                a.dd[ii[0]][0] = vgetq_lane_u32(v, 0);
-                a.dd[ii[1]][1] = vgetq_lane_u32(v, 1);
-                a.dd[ii[2]][2] = vgetq_lane_u32(v, 2);
-                a.dd[ii[3]][3] = vgetq_lane_u32(v, 3);
-                return v;
-            } // SIZE == 2
-            else if constexpr (SIZE == 2 && std::is_same_v<T, float32x2_t>) {
-                __builtin_prefetch(&a.dd[ii[0]][0], 1, 3);
-                __builtin_prefetch(&a.dd[ii[1]][1], 1, 3);
-                
-                a.dd[ii[0]][0] = vget_lane_f32(v, 0);
-                a.dd[ii[1]][1] = vget_lane_f32(v, 1);
-                return v;
-            }
-            else if constexpr (SIZE == 2 && std::is_same_v<T, int32x2_t>) {
-                __builtin_prefetch(&a.dd[ii[0]][0], 1, 3);
-                __builtin_prefetch(&a.dd[ii[1]][1], 1, 3);
-                
-                a.dd[ii[0]][0] = vget_lane_s32(v, 0);
-                a.dd[ii[1]][1] = vget_lane_s32(v, 1);
-                return v;
-            }
-            else if constexpr (SIZE == 2 && std::is_same_v<T, uint32x2_t>) {
-                __builtin_prefetch(&a.dd[ii[0]][0], 1, 3);
-                __builtin_prefetch(&a.dd[ii[1]][1], 1, 3);
-                
-                a.dd[ii[0]][0] = vget_lane_u32(v, 0);
-                a.dd[ii[1]][1] = vget_lane_u32(v, 1);
-                return v;
-            }
-            else if constexpr (SIZE == 2 && std::is_same_v<T, float64x2_t>) {
-                __builtin_prefetch(&a.dd[ii[0]][0], 1, 3);
-                __builtin_prefetch(&a.dd[ii[1]][1], 1, 3);
-                
-                a.dd[ii[0]][0] = vgetq_lane_f64(v, 0);
-                a.dd[ii[1]][1] = vgetq_lane_f64(v, 1);
-                return v;
-            } // SIZE == 1
-            else {
-                __builtin_prefetch(&a.dd[ii[0]], 1, 3);
-                return a.dd[ii[0]] = v;
-            }
-        }
-#else
-        [[gnu::hot, gnu::always_inline]]
-        inline T operator = (const T& v) {
-            if constexpr( SIZE == 8 ) {
-                a.dd[ii[0]][0] = v[0]; a.dd[ii[1]][1] = v[1]; a.dd[ii[2]][2] = v[2]; a.dd[ii[3]][3] = v[3];
-                a.dd[ii[4]][4] = v[4]; a.dd[ii[5]][5] = v[5]; a.dd[ii[6]][6] = v[6]; a.dd[ii[7]][7] = v[7];
-                return T{ a.dd[ii[0]][0], a.dd[ii[1]][1], a.dd[ii[2]][2], a.dd[ii[3]][3], a.dd[ii[4]][4], a.dd[ii[5]][5], a.dd[ii[6]][6], a.dd[ii[7]][7] };
-            }
-            else if constexpr( SIZE == 4 ) {
-                a.dd[ii[0]][0] = v[0]; a.dd[ii[1]][1] = v[1]; a.dd[ii[2]][2] = v[2]; a.dd[ii[3]][3] = v[3];
-                return T{ a.dd[ii[0]][0], a.dd[ii[1]][1], a.dd[ii[2]][2], a.dd[ii[3]][3] };
-            }
-            else if constexpr( SIZE == 2 ) {
-                a.dd[ii[0]][0] = v[0]; a.dd[ii[1]][1] = v[1];
-                return T{ a.dd[ii[0]][0], a.dd[ii[1]][1] };
-            }
-            else {
-                return a.dd[ii[0]] = v;
-            }
-        }
-        ACCESS_T
+        for (int k = 0; k < SIZE; k++)
+            ii[k] = idx_t(base + k);
+        return gather_impl(dd, ii, Seq{});
+    }
+
+    [[gnu::hot, gnu::always_inline]]
+    void scatter_contiguous(idx_t base, const T& v) {
+        IT ii;
+        for (int k = 0; k < SIZE; k++)
+            ii[k] = idx_t(base + k);
+        scatter_impl(dd, ii, v, Seq{});
+    }
 #endif
+
+    // ─────────────────────────────────────────────────────────────
+    //  Vector-indexed proxy classes for arr[idx] syntax
+    // ─────────────────────────────────────────────────────────────
+    class ZProxy {
+        ZArray& a;
+        IT ii;
+    public:
+        ZProxy(ZArray& a, const IT& i) : a(a), ii(i) {}
+
+        [[gnu::hot, gnu::always_inline]]
+        operator T() const { return gather_impl(a.dd, ii, Seq{}); }
+
+        [[gnu::hot, gnu::always_inline]]
+        T operator=(const T& v) {
+            scatter_impl(a.dd, ii, v, Seq{});
+            return v;
+        }
     };
-    class ZProxyConst
-      {
-      public:
-          const ZArray &a;
-          IT ii;
-      
-          ZProxyConst(const ZArray &a, const IT& i) : a(a), ii(i) {}
-#if defined(__aarch64__) && defined(__ARM_NEON)
-          ACCESS_T_NEON
-#else
-          ACCESS_T
-#endif
-      };
-    ZProxyConst operator[] (const IT& i) const { return ZProxyConst(*this, i); }
-    ZProxy operator[] (const IT& i) { return ZProxy(*this, i); }
+
+    class ZProxyConst {
+        const ZArray& a;
+        IT ii;
+    public:
+        ZProxyConst(const ZArray& a, const IT& i) : a(a), ii(i) {}
+
+        [[gnu::hot, gnu::always_inline]]
+        operator T() const { return gather_impl(a.dd, ii, Seq{}); }
+    };
+
+    // ─────────────────────────────────────────────────────────────
+    //  Vector-indexed operator[] — SFINAE ensures no ambiguity
+    //  with the scalar operator[](size_t) above.
+    //  int/size_t → scalar overload,  int4v/int8v → this one.
+    // ─────────────────────────────────────────────────────────────
+    template<typename I, std::enable_if_t<is_simd_vector<I>::value, int> = 0>
+    ZProxyConst operator[](const I& i) const { return ZProxyConst(*this, IT(i)); }
+
+    template<typename I, std::enable_if_t<is_simd_vector<I>::value, int> = 0>
+    ZProxy operator[](const I& i) { return ZProxy(*this, IT(i)); }
 };
 
